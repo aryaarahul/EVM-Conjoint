@@ -29,7 +29,6 @@ if "initialized" not in st.session_state:
 # --- 2. DUAL-TRACK LOGIC ---
 def process_vote_dual(winner_id, loser_ids, user):
     K = 32
-    # LOCAL Track
     winner_local = st.session_state.local_images[winner_id]
     Ra_local = winner_local['elo_rating']
     for lid in loser_ids:
@@ -40,7 +39,6 @@ def process_vote_dual(winner_id, loser_ids, user):
         Ra_local += (K/3) * (1 - Ea_l)
     st.session_state.local_images[winner_id]['elo_rating'] = Ra_local
 
-    # GLOBAL Track
     try:
         win_db = supabase.table("images").select("elo_rating, votes_count").eq("id", winner_id).single().execute().data
         Ra_db = win_db['elo_rating']
@@ -53,7 +51,6 @@ def process_vote_dual(winner_id, loser_ids, user):
             Ra_db += (K/3) * (1 - Ea_db)
         
         supabase.table("images").update({"elo_rating": Ra_db, "votes_count": win_db['votes_count'] + 1}).eq("id", winner_id).execute()
-        
         supabase.table("votes").insert({
             "user_name": user, "winner_id": winner_id, 
             "losers_ids": ", ".join([st.session_state.local_images[lid]['filename'] for lid in loser_ids])
@@ -66,16 +63,13 @@ def save_and_get_comparison(user):
         local_data = list(st.session_state.local_images.values())
         sorted_local = sorted(local_data, key=lambda x: x['elo_rating'], reverse=True)
         local_ranks = {item['filename'].lower(): i + 1 for i, item in enumerate(sorted_local)}
-        
         fixed_order = sorted([img['filename'] for img in local_data], key=natural_sort_key)
+        
         row_data = {"user_name": user}
         for i, fname in enumerate(fixed_order):
             row_data[f"image_{i+1}_rank"] = local_ranks.get(fname.lower())
         
-        # Explicit Insert with result check
-        result = supabase.table("user_rankings_fixed").insert(row_data).execute()
-        if not result.data:
-            print("DB INSERT ERROR: No data returned from Supabase insert.")
+        supabase.table("user_rankings_fixed").insert(row_data).execute()
         
         global_res = supabase.table("images").select("filename, elo_rating").order("elo_rating", desc=True).execute()
         global_ranks = {item['filename'].lower(): i + 1 for i, item in enumerate(global_res.data)}
@@ -87,54 +81,54 @@ def save_and_get_comparison(user):
             })
         return sorted(comp_list, key=lambda x: x['Your Rank'])
     except Exception as e:
-        st.error(f"Critical DB Save Error: {e}")
+        st.error(f"DB Error: {e}")
         return []
 
 # --- 3. UI LAYOUT ---
-st.set_page_config(page_title="Product Study", layout="wide")
+st.set_page_config(page_title="Product Study", layout="wide", initial_sidebar_state="collapsed")
+
+# Inject CSS to reduce white space even further
+st.markdown("""
+    <style>
+    .block-container {padding-top: 1rem; padding-bottom: 0rem;}
+    [data-testid="stVerticalBlock"] {gap: 0.5rem;}
+    </style>
+    """, unsafe_allow_html=True)
 
 if not st.session_state.finished:
-    st.sidebar.header("Study Status")
-    st.session_state.participant_name = st.sidebar.text_input("Name", value=st.session_state.participant_name)
-    st.sidebar.write(f"Round: **{st.session_state.count + 1} / 45**")
-    st.sidebar.progress(st.session_state.count / 45)
+    # Use a column layout for the header to save space
+    h1, h2 = st.columns([3, 1])
+    with h1: st.subheader("Which product do you prefer?")
+    with h2: st.write(f"**Round: {st.session_state.count + 1} / 45**")
 
-    st.markdown("### Which product do you prefer?")
-    
     if not st.session_state.current_batch:
         all_ids = list(st.session_state.local_images.keys())
         st.session_state.current_batch = [st.session_state.local_images[sid] for sid in random.sample(all_ids, 4)]
 
-    # GRID UI - Fixed height containers to prevent scrolling
-    cols = st.columns(2)
+    # 4-COLUMN SINGLE ROW UI
+    cols = st.columns(4)
     for i, img in enumerate(st.session_state.current_batch):
-        with cols[i % 2]:
-            with st.container(border=True):
-                # Using a fixed-height container to scale images down
-                st.image(img['image_url'], use_container_width=True)
-                if st.button(f"Select {chr(65+i)}", key=f"btn_{img['id']}_{st.session_state.count}", use_container_width=True):
-                    process_vote_dual(img['id'], [x['id'] for x in st.session_state.current_batch if x['id'] != img['id']], st.session_state.participant_name)
-                    st.session_state.count += 1
-                    if st.session_state.count >= st.session_state.max_votes:
-                        st.session_state.comparison_data = save_and_get_comparison(st.session_state.participant_name)
-                        st.session_state.finished = True
-                    else:
-                        st.session_state.current_batch = []
-                    st.rerun()
+        with cols[i]:
+            # Scale images to a fixed height using CSS/HTML for maximum control
+            st.image(img['image_url'], use_container_width=True)
+            if st.button(f"Select {chr(65+i)}", key=f"btn_{img['id']}_{st.session_state.count}", use_container_width=True):
+                process_vote_dual(img['id'], [x['id'] for x in st.session_state.current_batch if x['id'] != img['id']], st.session_state.participant_name)
+                st.session_state.count += 1
+                if st.session_state.count >= st.session_state.max_votes:
+                    st.session_state.comparison_data = save_and_get_comparison(st.session_state.participant_name)
+                    st.session_state.finished = True
+                else:
+                    st.session_state.current_batch = []
+                st.rerun()
+    
+    # Progress bar at the bottom
+    st.progress(st.session_state.count / 45)
 
 else:
-    st.balloons()
     st.success(f"✅ Data saved for {st.session_state.participant_name}")
-    
-    if st.session_state.comparison_data:
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.subheader("Your Top Picks")
-            st.table(st.session_state.comparison_data[:5])
-        with c2:
-            st.subheader("Comparison Table")
-            st.dataframe(st.session_state.comparison_data, use_container_width=True)
-    
-    if st.button("Restart Study"):
+    c1, c2 = st.columns([1, 2])
+    with c1: st.table(st.session_state.comparison_data[:5])
+    with c2: st.dataframe(st.session_state.comparison_data, use_container_width=True)
+    if st.button("Restart"):
         for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
