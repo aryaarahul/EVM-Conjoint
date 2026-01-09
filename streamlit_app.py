@@ -34,7 +34,7 @@ if "initialized" not in st.session_state:
 # --- 2. LOGIC FUNCTIONS ---
 def record_vote_locally(winner_id, loser_ids):
     K = 32
-    # Instant Local Elo Update (Track A)
+    # Instant Local Elo Update (Track A) for immediate results
     winner_local = st.session_state.local_images[winner_id]
     Ra = winner_local['elo_rating']
     for lid in loser_ids:
@@ -52,19 +52,31 @@ def record_vote_locally(winner_id, loser_ids):
     })
 
 def sync_everything_to_supabase(user):
-    with st.spinner("Finalizing results..."):
-        # A. Batch Sync Global Elos via RPC
+    with st.spinner("Syncing your votes to Global Leaderboard..."):
         for vote in st.session_state.vote_queue:
             try:
+                # 1. Update Global Elo and Global Vote Count via the SQL Function
                 supabase.rpc('update_elo_parallel', {
                     'win_id': str(vote['winner_id']), 
                     'los_ids': [str(lid) for lid in vote['loser_ids']],
                     'k_val': 32
                 }).execute()
+
+                # 2. Register individual vote log in 'votes' table
+                win_name = st.session_state.local_images[vote['winner_id']]['filename']
+                los_names = [st.session_state.local_images[lid]['filename'] for lid in vote['loser_ids']]
+                
+                supabase.table("votes").insert({
+                    "user_name": user,
+                    "winner_id": vote['winner_id'],
+                    "winner_name": win_name,
+                    "losers_ids": str(vote['loser_ids']),
+                    "losers_names": ", ".join(los_names)
+                }).execute()
             except Exception as e:
                 print(f"Sync error: {e}")
 
-        # B. Save Final Individual Ranking Table
+        # 3. Save Final User Ranking Fixed Table
         local_data = list(st.session_state.local_images.values())
         sorted_local = sorted(local_data, key=lambda x: x['elo_rating'], reverse=True)
         local_ranks = {item['filename'].lower(): i + 1 for i, item in enumerate(sorted_local)}
@@ -75,19 +87,17 @@ def sync_everything_to_supabase(user):
             row_data[f"image_{i+1}_rank"] = local_ranks.get(fname.lower())
         supabase.table("user_rankings_fixed").insert(row_data).execute()
 
-        # C. Prepare Comparison Data
+        # 4. Fetch Fresh Global Standings for Results Page
         global_res = supabase.table("images").select("filename, elo_rating").order("elo_rating", desc=True).execute()
         global_ranks = {item['filename'].lower(): i + 1 for i, item in enumerate(global_res.data)}
 
         comp_list = []
         for f in fixed_order:
-            u_rank = local_ranks.get(f.lower())
-            g_rank = global_ranks.get(f.lower())
             comp_list.append({
                 "Image": f, 
-                "Your Rank": u_rank, 
-                "Global Rank": g_rank, 
-                "Difference": g_rank - u_rank
+                "Your Rank": local_ranks.get(f.lower()), 
+                "Global Rank": global_ranks.get(f.lower()), 
+                "Difference": global_ranks.get(f.lower()) - local_ranks.get(f.lower())
             })
         st.session_state.comparison_data = sorted(comp_list, key=lambda x: x['Your Rank'])
 
@@ -103,19 +113,19 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# STAGE 1: Participant Name Popup
+# STAGE 1: Name Entry
 if not st.session_state.name_confirmed:
     st.write("## Welcome to the Study")
-    name_input = st.text_input("Participant Name:", placeholder="Enter your full name")
+    name_input = st.text_input("Participant Name:", placeholder="Enter your name to begin")
     if st.button("Start Ranking Session"):
         if name_input.strip():
             st.session_state.participant_name = name_input.strip()
             st.session_state.name_confirmed = True
             st.rerun()
         else:
-            st.warning("Please provide a name to proceed.")
+            st.warning("Please enter your name.")
 
-# STAGE 2: 2x2 Voting Matrix
+# STAGE 2: Voting Matrix
 elif not st.session_state.finished:
     st.write(f"### Which do you prefer, {st.session_state.participant_name}?")
 
@@ -139,16 +149,14 @@ elif not st.session_state.finished:
                     st.session_state.current_batch = []
                 st.rerun()
     
-    # Progress Section
     st.markdown("---")
     st.markdown(f"<p class='status-text'>Progress: {st.session_state.count} / {st.session_state.max_votes} Rounds Completed</p>", unsafe_allow_html=True)
     st.progress(st.session_state.count / st.session_state.max_votes)
 
-# STAGE 3: Full Comparison (1-14)
+# STAGE 3: Full Comparison
 else:
     st.balloons()
     st.success(f"✅ Session complete for {st.session_state.participant_name}!")
-    st.subheader("Final Ranking Comparison")
     st.dataframe(st.session_state.comparison_data, use_container_width=True, hide_index=True)
     
     if st.button("Finish and Restart"):
