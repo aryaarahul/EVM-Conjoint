@@ -5,9 +5,9 @@ from io import BytesIO
 from supabase import create_client
 
 # --- 1. SETUP & CONFIG ---
-# Access secrets from Streamlit Cloud settings later
-url = st.secrets["https://chxlkmjhytftwebosogv.supabase.co "]
-key = st.secrets["sb_publishable_eXf0VW28BIEANJMe_QEemA_kd26RUDz "]
+# These refer to the "Keys" we will define in the Streamlit Dashboard
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
 
 def natural_sort_key(s):
