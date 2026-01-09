@@ -21,7 +21,7 @@ if "initialized" not in st.session_state:
     st.session_state.name_confirmed = False
     st.session_state.participant_name = ""
     st.session_state.count = 0
-    st.session_state.max_votes = 45
+    st.session_state.max_votes = 30  # REDUCED TO 30 ROUNDS
     st.session_state.current_batch = []
     st.session_state.finished = False
     st.session_state.comparison_data = []
@@ -30,7 +30,6 @@ if "initialized" not in st.session_state:
 # --- 2. LOGIC FUNCTIONS ---
 def process_vote_dual(winner_id, loser_ids, user):
     K = 32
-    # Local Track Update
     winner_local = st.session_state.local_images[winner_id]
     Ra_local = winner_local['elo_rating']
     for lid in loser_ids:
@@ -41,7 +40,6 @@ def process_vote_dual(winner_id, loser_ids, user):
         Ra_local += (K/3) * (1 - Ea_l)
     st.session_state.local_images[winner_id]['elo_rating'] = Ra_local
 
-    # Global Track Update (Supabase)
     try:
         win_db = supabase.table("images").select("elo_rating, votes_count").eq("id", winner_id).single().execute().data
         Ra_db = win_db['elo_rating']
@@ -66,28 +64,20 @@ def save_and_get_comparison(user):
     local_ranks = {item['filename'].lower(): i + 1 for i, item in enumerate(sorted_local)}
     fixed_order = sorted([img['filename'] for img in local_data], key=natural_sort_key)
     
-    # Save to user_rankings_fixed
     row_data = {"user_name": user}
     for i, fname in enumerate(fixed_order):
         row_data[f"image_{i+1}_rank"] = local_ranks.get(fname.lower())
+    
     supabase.table("user_rankings_fixed").insert(row_data).execute()
     
-    # Fetch Global Ranks
     global_res = supabase.table("images").select("filename, elo_rating").order("elo_rating", desc=True).execute()
     global_ranks = {item['filename'].lower(): i + 1 for i, item in enumerate(global_res.data)}
 
-    # Build the full 14-item comparison
     comp = []
     for f in fixed_order:
         u_rank = local_ranks.get(f.lower())
         g_rank = global_ranks.get(f.lower())
-        comp.append({
-            "Image Filename": f,
-            "Your Rank": u_rank,
-            "Global Rank": g_rank,
-            "Difference": g_rank - u_rank
-        })
-    # Return sorted by the user's preference (1 to 14)
+        comp.append({"Image Filename": f, "Your Rank": u_rank, "Global Rank": g_rank, "Difference": g_rank - u_rank})
     return sorted(comp, key=lambda x: x['Your Rank'])
 
 # --- 3. UI LAYOUT ---
@@ -96,34 +86,32 @@ st.set_page_config(page_title="Preference Study", layout="wide", initial_sidebar
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 0rem;}
-    [data-testid="stImage"] img {max-height: 230px; width: auto; margin: auto; display: block;}
+    [data-testid="stImage"] img {max-height: 220px; width: auto; margin: auto; display: block;}
     .stButton button {height: 2.2rem; margin-top: -5px;}
+    .progress-text {font-size: 14px; font-weight: bold; color: #555; margin-bottom: -10px;}
     </style>
     """, unsafe_allow_html=True)
 
-# POPUP FOR NAME
+# 1. NAME ENTRANCE
 if not st.session_state.name_confirmed:
     st.write("## Product Preference Study")
-    name_input = st.text_input("Enter your name to start:", placeholder="Your Name")
+    name_input = st.text_input("Enter your name to start (30 Rounds):", placeholder="Your Name")
     if st.button("Start Study"):
         if name_input.strip():
             st.session_state.participant_name = name_input
             st.session_state.name_confirmed = True
             st.rerun()
-        else:
-            st.error("Please enter a name.")
+        else: st.error("Please enter a name.")
 
-# MAIN STUDY UI
+# 2. VOTING INTERFACE
 elif not st.session_state.finished:
-    h1, h2 = st.columns([3,1])
-    with h1: st.write(f"### Select your preferred image, {st.session_state.participant_name}")
-    with h2: st.write(f"**Round: {st.session_state.count + 1} / 45**")
+    st.write(f"### Select the best product, {st.session_state.participant_name}")
 
     if not st.session_state.current_batch:
         all_ids = list(st.session_state.local_images.keys())
         st.session_state.current_batch = [st.session_state.local_images[sid] for sid in random.sample(all_ids, 4)]
 
-    # 2x2 Grid
+    # Compact 2x2
     c1, c2 = st.columns(2)
     batch = st.session_state.current_batch
     for i in range(4):
@@ -136,24 +124,19 @@ elif not st.session_state.finished:
                 if st.session_state.count >= st.session_state.max_votes:
                     st.session_state.comparison_data = save_and_get_comparison(st.session_state.participant_name)
                     st.session_state.finished = True
-                else:
-                    st.session_state.current_batch = []
+                else: st.session_state.current_batch = []
                 st.rerun()
-    st.progress(st.session_state.count / 45)
+    
+    # BOTTOM PROGRESS STATUS
+    st.markdown("---")
+    st.markdown(f"<p class='progress-text'>Round {st.session_state.count + 1} of {st.session_state.max_votes}</p>", unsafe_allow_html=True)
+    st.progress(st.session_state.count / st.session_state.max_votes)
 
-# FULL RESULT VIEW (1-14)
+# 3. RESULTS
 else:
     st.balloons()
-    st.success(f"✅ Well done, {st.session_state.participant_name}! Here is your complete 14-image ranking.")
-    
-    # Show the full comparison dataframe
-    st.subheader("Your Ranking vs. The Global Community")
-    st.dataframe(
-        st.session_state.comparison_data, 
-        use_container_width=True,
-        hide_index=True
-    )
-
+    st.success(f"✅ Well done! Here is your 14-image ranking compared to the world.")
+    st.dataframe(st.session_state.comparison_data, use_container_width=True, hide_index=True)
     if st.button("Finish & Restart"):
         for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
